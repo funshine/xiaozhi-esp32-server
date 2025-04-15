@@ -27,7 +27,11 @@ from core.handle.functionHandler import FunctionHandler
 from plugins_func.register import Action, ActionResponse
 from core.auth import AuthMiddleware, AuthenticationError
 from core.mcp.manager import MCPManager
-from config.config_loader import get_private_config_from_api
+from config.config_loader import (
+    get_private_config_from_api,
+    DeviceNotFoundException,
+    DeviceBindException,
+)
 
 TAG = __name__
 
@@ -45,6 +49,9 @@ class ConnectionHandler:
         self.config = copy.deepcopy(config)
         self.logger = setup_logging()
         self.auth = AuthMiddleware(config)
+
+        self.need_bind = False
+        self.bind_code = None
 
         self.websocket = None
         self.headers = None
@@ -211,7 +218,15 @@ class ConnectionHandler:
             )
             private_config["delete_audio"] = bool(self.config.get("delete_audio", True))
             self.logger.bind(tag=TAG).info(f"获取差异化配置成功: {private_config}")
+        except DeviceNotFoundException as e:
+            self.need_bind = True
+            private_config = {}
+        except DeviceBindException as e:
+            self.need_bind = True
+            self.bind_code = e.bind_code
+            private_config = {}
         except Exception as e:
+            self.need_bind = True
             self.logger.bind(tag=TAG).error(f"获取差异化配置失败: {e}")
             private_config = {}
 
@@ -259,8 +274,6 @@ class ConnectionHandler:
             self.config["selected_module"]["Intent"] = private_config[
                 "selected_module"
             ]["Intent"]
-        if private_config.get("prompt", None) is not None:
-            self.config["prompt"] = private_config["prompt"]
         try:
             modules = initialize_modules(
                 self.logger,
@@ -275,6 +288,10 @@ class ConnectionHandler:
         except Exception as e:
             self.logger.bind(tag=TAG).error(f"初始化组件失败: {e}")
             modules = {}
+        if modules.get("vad", None) is not None:
+            self.vad = modules["vad"]
+        if modules.get("asr", None) is not None:
+            self.asr = modules["asr"]
         if modules.get("tts", None) is not None:
             self.tts = modules["tts"]
         if modules.get("llm", None) is not None:
@@ -283,6 +300,8 @@ class ConnectionHandler:
             self.intent = modules["intent"]
         if modules.get("memory", None) is not None:
             self.memory = modules["memory"]
+        if modules.get("prompt", None) is not None:
+            self.change_system_prompt(modules["prompt"])
 
     def _initialize_memory(self):
         """初始化记忆模块"""
@@ -350,7 +369,6 @@ class ConnectionHandler:
         response_message = []
         processed_chars = 0  # 跟踪已处理的字符位置
         try:
-            start_time = time.time()
             # 使用带记忆的对话
             future = asyncio.run_coroutine_threadsafe(
                 self.memory.query_memory(query), self.loop
@@ -371,9 +389,6 @@ class ConnectionHandler:
             response_message.append(content)
             if self.client_abort:
                 break
-
-            end_time = time.time()
-            # self.logger.bind(tag=TAG).debug(f"大模型返回时间: {end_time - start_time} 秒, 生成token={content}")
 
             # 合并当前全部文本并处理未分割部分
             full_text = "".join(response_message)
