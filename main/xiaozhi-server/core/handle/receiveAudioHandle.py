@@ -12,7 +12,7 @@ async def handleAudioMessage(conn, audio):
     if not conn.asr_server_receive:
         logger.bind(tag=TAG).debug(f"前期数据处理中，暂停接收")
         return
-    if conn.client_listen_mode == "auto":
+    if conn.client_listen_mode == "auto" or conn.client_listen_mode == "realtime":
         have_voice = conn.vad.is_vad(conn, audio)
     else:
         have_voice = conn.client_have_voice
@@ -30,17 +30,23 @@ async def handleAudioMessage(conn, audio):
     # 如果本段有声音，且已经停止了
     if conn.client_voice_stop:
         conn.client_abort = False
-        conn.asr_server_receive = False
+        if conn.client_listen_mode == "auto":
+            conn.asr_server_receive = False
         # 音频太短了，无法识别
         if len(conn.asr_audio) < 15:
             conn.asr_server_receive = True
         else:
+            logger.bind(tag=TAG).info("ASR开始识别文本")
             text, file_path = await conn.asr.speech_to_text(
                 conn.asr_audio, conn.session_id
             )
             logger.bind(tag=TAG).info(f"识别文本: {text}")
             text_len, _ = remove_punctuation_and_length(text)
             if text_len > 0:
+                # 双工模式下，如果前次聊天没有结束，则打断
+                if conn.client_listen_mode == "realtime" and conn.tts_first_text_index > -1:
+                    logger.bind(tag=TAG).info("打断上一次对话")
+                    await conn.abort_last_chat()
                 await startToChat(conn, text)
             else:
                 conn.asr_server_receive = True

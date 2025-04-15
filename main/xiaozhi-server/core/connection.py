@@ -62,6 +62,7 @@ class ConnectionHandler:
         self.loop = asyncio.get_event_loop()
         self.stop_event = threading.Event()
         self.tts_queue = queue.Queue()
+        self.tts_files = {}
         self.audio_play_queue = queue.Queue()
         self.executor = ThreadPoolExecutor(max_workers=10)
 
@@ -124,17 +125,21 @@ class ConnectionHandler:
 
             self.welcome_msg = self.config["xiaozhi"]
             self.welcome_msg["session_id"] = self.session_id
-            await self.websocket.send(json.dumps(self.welcome_msg))
+            # await self.websocket.send(json.dumps(self.welcome_msg))
 
             # 异步初始化
             self.executor.submit(self._initialize_components)
             # tts 消化线程
+            self.tts_thread_pause_event = threading.Event()
+            self.tts_thread_pause_event.set()
             self.tts_priority_thread = threading.Thread(
                 target=self._tts_priority_thread, daemon=True
             )
             self.tts_priority_thread.start()
 
             # 音频播放 消化线程
+            self.audio_play_thread_pause_event = threading.Event()
+            self.audio_play_thread_pause_event.set()
             self.audio_play_priority_thread = threading.Thread(
                 target=self._audio_play_priority_thread, daemon=True
             )
@@ -686,6 +691,7 @@ class ConnectionHandler:
 
     def _tts_priority_thread(self):
         while not self.stop_event.is_set():
+            self.tts_thread_pause_event.wait()
             text = None
             try:
                 try:
@@ -733,6 +739,8 @@ class ConnectionHandler:
                     and os.path.exists(tts_file)
                 ):
                     os.remove(tts_file)
+                    # 从字典中删除文件路径
+                    del self.tts_files[tts_file]
             except Exception as e:
                 self.logger.bind(tag=TAG).error(f"TTS任务处理错误: {e}")
                 self.clearSpeakStatus()
@@ -754,6 +762,7 @@ class ConnectionHandler:
 
     def _audio_play_priority_thread(self):
         while not self.stop_event.is_set():
+            self.audio_play_thread_pause_event.wait()
             text = None
             try:
                 try:
@@ -780,6 +789,7 @@ class ConnectionHandler:
             self.logger.bind(tag=TAG).error(f"tts转换失败，{text}")
             return None, text, text_index
         self.logger.bind(tag=TAG).debug(f"TTS 文件生成完毕: {tts_file}")
+        self.tts_files[tts_file] = True
         return tts_file, text, text_index
 
     def clearSpeakStatus(self):
@@ -849,3 +859,56 @@ class ConnectionHandler:
             self.close_after_chat = True
         except Exception as e:
             self.logger.bind(tag=TAG).error(f"Chat and close error: {str(e)}")
+
+    async def abort_last_chat(self):
+        """Abort the current chat"""
+        self.logger.bind(tag=TAG).debug("Aborting chat.")
+        self.client_abort = True
+        self.tts_thread_pause_event.clear()  # 暂停TTS线程
+        self.audio_play_thread_pause_event.clear()  # 暂停音频播放线程
+
+        # 立即关闭线程池
+        if self.executor:
+            self.executor.shutdown(wait=False, cancel_futures=True)
+            self.executor = None
+        await asyncio.sleep(0.1)
+
+        # 打断客户端说话状态
+        await self.websocket.send(json.dumps({"type": "tts", "state": "stop", "session_id": self.session_id}))
+        self.logger.bind(tag=TAG).debug("Client speaking status cleared.")
+        self.clearSpeakStatus()  # 清除服务端讲话状态
+        self.logger.bind(tag=TAG).debug("Cleared server speaking status.")
+        self._clear_queues()  # 清空任务队列
+        self.logger.bind(tag=TAG).debug("Cleared task queues.")
+        self.logger.bind(tag=TAG).debug("Chat aborted.")
+
+        # 删除tts文件
+        if self.tts.delete_audio_file:
+            for tts_file in list(self.tts_files.keys()):
+                if tts_file is not None:
+                    try:
+                        if os.path.exists(tts_file):
+                            os.remove(tts_file)
+                        del self.tts_files[tts_file]
+                    except (OSError, KeyError) as e:
+                        self.logger.warning(f"Failed to clean up file {tts_file}: {str(e)}")
+
+        # 打印self.tts_files字典剩余的文件个数
+        self.logger.bind(tag=TAG).debug(f"Remaining TTS files: {len(self.tts_files)}")
+
+        if self.tts.delete_audio_file:
+            # 找到所有在self.tts.output_file目录下，所有以tts-开头的文件
+            for file in os.listdir(self.tts.output_file):
+                if file.startswith("tts-"):
+                    tts_file = os.path.join(self.tts.output_file, file)
+                    try:
+                        os.remove(tts_file)
+                    except OSError as e:
+                        self.logger.warning(f"Failed to delete file {tts_file}: {str(e)}")
+
+        self.client_abort = False
+        # 重建线程池
+        self.executor = ThreadPoolExecutor(max_workers=10)
+        self.audio_play_thread_pause_event.set()  # 恢复播放线程
+        self.tts_thread_pause_event.set()  # 恢复TTS线程
+        asyncio.sleep(0.5)
