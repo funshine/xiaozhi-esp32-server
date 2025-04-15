@@ -10,6 +10,7 @@ from config.settings import load_config
 import inspect
 import os
 import logging
+import types
 
 # 设置全局日志级别为WARNING，抑制INFO级别日志
 logging.basicConfig(level=logging.WARNING)
@@ -29,32 +30,41 @@ class AsyncPerformanceTester:
         self.results = {"llm": {}, "tts": {}, "combinations": []}
 
     async def _check_ollama_service(self, base_url: str, model_name: str) -> bool:
-        """异步检查Ollama服务状态"""
-        async with aiohttp.ClientSession() as session:
-            try:
+        """异步检查Ollama服务状态，服务不可用时等待更久并避免误判响应时间极小"""
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)  # 增加超时时间，避免极快失败
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 # 检查服务是否可用
-                async with session.get(f"{base_url}/api/version") as response:
-                    if response.status != 200:
-                        print(f"🚫 Ollama服务未启动或无法访问: {base_url}")
-                        return False
+                try:
+                    async with session.get(f"{base_url}/api/version") as response:
+                        if response.status != 200:
+                            print(f"🚫 Ollama服务未启动或无法访问: {base_url}")
+                            return False
+                except Exception as e:
+                    print(f"🚫 Ollama服务连接失败: {str(e)}")
+                    return False
 
                 # 检查模型是否存在
-                async with session.get(f"{base_url}/api/tags") as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        models = data.get("models", [])
-                        if not any(model["name"] == model_name for model in models):
-                            print(
-                                f"🚫 Ollama模型 {model_name} 未找到，请先使用 ollama pull {model_name} 下载"
-                            )
+                try:
+                    async with session.get(f"{base_url}/api/tags") as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            models = data.get("models", [])
+                            if not any(model["name"] == model_name for model in models):
+                                print(
+                                    f"🚫 Ollama模型 {model_name} 未找到，请先使用 ollama pull {model_name} 下载"
+                                )
+                                return False
+                        else:
+                            print(f"🚫 无法获取Ollama模型列表")
                             return False
-                    else:
-                        print(f"🚫 无法获取Ollama模型列表")
-                        return False
-                return True
-            except Exception as e:
-                print(f"🚫 无法连接到Ollama服务: {str(e)}")
-                return False
+                except Exception as e:
+                    print(f"🚫 Ollama模型列表连接失败: {str(e)}")
+                    return False
+            return True
+        except Exception as e:
+            print(f"🚫 无法连接到Ollama服务: {str(e)}")
+            return False
 
     async def _test_tts(self, tts_name: str, config: Dict) -> Dict:
         """异步测试单个TTS性能"""
@@ -76,32 +86,46 @@ class AsyncPerformanceTester:
             print(f"🎵 测试 TTS: {tts_name}")
 
             tmp_file = tts.generate_filename()
-            await tts.text_to_speak("连接测试", tmp_file)
+            try:
+                await tts.text_to_speak("连接测试", tmp_file)
+            except Exception as e:
+                print(f"❌ {tts_name} 连接失败: {str(e)}")
+                return {"name": tts_name, "type": "tts", "errors": 1}
 
             if not tmp_file or not os.path.exists(tmp_file):
                 print(f"❌ {tts_name} 连接失败")
                 return {"name": tts_name, "type": "tts", "errors": 1}
 
             total_time = 0
+            valid_count = 0
             test_count = len(self.test_sentences[:2])
 
             for i, sentence in enumerate(self.test_sentences[:2], 1):
                 start = time.time()
                 tmp_file = tts.generate_filename()
-                await tts.text_to_speak(sentence, tmp_file)
+                try:
+                    await tts.text_to_speak(sentence, tmp_file)
+                except Exception as e:
+                    print(f"✗ {tts_name} [{i}/{test_count}] 失败: {str(e)}")
+                    continue
                 duration = time.time() - start
-                total_time += duration
 
                 if tmp_file and os.path.exists(tmp_file):
                     print(f"✓ {tts_name} [{i}/{test_count}]")
+                    total_time += duration
+                    valid_count += 1
                 else:
-                    print(f"✗ {tts_name} [{i}/{test_count}]")
-                    return {"name": tts_name, "type": "tts", "errors": 1}
+                    print(f"✗ {tts_name} [{i}/{test_count}] 文件不存在")
+                    continue
+
+            if valid_count == 0:
+                print(f"❌ {tts_name} 所有句子测试均失败")
+                return {"name": tts_name, "type": "tts", "errors": 1}
 
             return {
                 "name": tts_name,
                 "type": "tts",
-                "avg_time": total_time / test_count,
+                "avg_time": total_time / valid_count,
                 "errors": 0,
             }
 
@@ -139,19 +163,21 @@ class AsyncPerformanceTester:
             ]
 
             # 创建所有句子的测试任务
-            sentence_tasks = []
-            for sentence in test_sentences:
-                sentence_tasks.append(
-                    self._test_single_sentence(llm_name, llm, sentence)
-                )
+            sentence_tasks = [
+                self._test_single_sentence(llm_name, llm, sentence)
+                for sentence in test_sentences
+            ]
 
             # 并发执行所有句子测试
             sentence_results = await asyncio.gather(*sentence_tasks)
 
-            # 处理结果
-            valid_results = [r for r in sentence_results if r is not None]
+            # 只统计真正有响应的句子（即返回非None且响应时间大于0的结果）
+            valid_results = [
+                r for r in sentence_results
+                if r is not None and r.get("response_time", 0) > 0
+            ]
             if not valid_results:
-                print(f"⚠️  {llm_name} 无有效数据，可能配置错误")
+                print(f"⚠️  {llm_name} 无有效数据，可能配置错误或服务不可用")
                 return {"name": llm_name, "type": "llm", "errors": 1}
 
             first_token_times = [r["first_token_time"] for r in valid_results]
@@ -163,7 +189,7 @@ class AsyncPerformanceTester:
             filtered_times = [t for t in response_times if t <= mean + 3 * stdev]
 
             if len(filtered_times) < len(test_sentences) * 0.5:
-                print(f"⚠️  {llm_name} 有效数据不足，可能网络不稳定")
+                print(f"⚠️  {llm_name} 有效数据不足，可能网络不稳定或服务不可用")
                 return {"name": llm_name, "type": "llm", "errors": 1}
 
             return {
@@ -193,28 +219,68 @@ class AsyncPerformanceTester:
             first_token_received = False
             first_token_time = None
 
+            def is_error_chunk(chunk):
+                # 可根据实际情况扩展
+                if not chunk:
+                    return True
+                chunk_str = str(chunk).lower()
+                return any(
+                    err in chunk_str
+                    for err in [
+                        "error",
+                        "exception",
+                        "拒绝",
+                        "异常"
+                    ]
+                )
+
             async def process_response():
                 nonlocal first_token_received, first_token_time
-                for chunk in llm.response(
-                    "perf_test", [{"role": "user", "content": sentence}]
-                ):
-                    if not first_token_received and chunk.strip() != "":
-                        first_token_time = time.time() - sentence_start
-                        first_token_received = True
-                        print(f"✓ {llm_name} 首个Token: {first_token_time:.3f}s")
-                    yield chunk
+                try:
+                    resp = llm.response("perf_test", [{"role": "user", "content": sentence}])
+                    if hasattr(resp, "__aiter__"):
+                        async for chunk in resp:
+                            if is_error_chunk(chunk):
+                                print(f"⚠️ {llm_name} 响应内容异常: {chunk}")
+                                return
+                            if not first_token_received and chunk and chunk.strip() != "":
+                                first_token_time = time.time() - sentence_start
+                                first_token_received = True
+                                print(f"✓ {llm_name} 首个Token: {first_token_time:.3f}s")
+                            yield chunk
+                    else:
+                        for chunk in resp:
+                            if is_error_chunk(chunk):
+                                print(f"⚠️ {llm_name} 响应内容异常: {chunk}")
+                                return
+                            if not first_token_received and chunk and str(chunk).strip() != "":
+                                first_token_time = time.time() - sentence_start
+                                first_token_received = True
+                                print(f"✓ {llm_name} 首个Token: {first_token_time:.3f}s")
+                            yield chunk
+                            await asyncio.sleep(0)
+                except Exception as e:
+                    print(f"⚠️ {llm_name} 响应异常: {str(e)}")
+                    return
 
             response_chunks = []
             async for chunk in process_response():
                 response_chunks.append(chunk)
 
+            # 只要有一个chunk是错误内容，视为无效
+            if (
+                not response_chunks
+                or all((not c or not str(c).strip()) for c in response_chunks)
+                or any(is_error_chunk(c) for c in response_chunks)
+            ):
+                print(f"⚠️ {llm_name} 响应无内容或为错误，视为失败")
+                return None
+
             response_time = time.time() - sentence_start
             print(f"✓ {llm_name} 完成响应: {response_time:.3f}s")
 
             if first_token_time is None:
-                first_token_time = (
-                    response_time  # 如果没有检测到first token，使用总响应时间
-                )
+                first_token_time = response_time
 
             return {
                 "name": llm_name,
@@ -440,6 +506,9 @@ class AsyncPerformanceTester:
 
         # 并发执行所有测试任务
         all_results = await asyncio.gather(*all_tasks, return_exceptions=True)
+
+        # 新增：过滤掉异常对象
+        all_results = [r for r in all_results if isinstance(r, dict)]
 
         # 处理LLM结果
         llm_results = {}
