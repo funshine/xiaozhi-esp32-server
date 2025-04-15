@@ -219,13 +219,13 @@ export default {
 
 .equipment-management {
   padding: 0 9px;
-  width: 82px;
-  height: 24px;
+  width: 100px;
+  height: 30px;
   border-radius: 12px;
   background: #deeafe;
   display: flex;
   justify-content: center;
-  font-size: 10px;
+  font-size: 14px;
   font-weight: 500;
   gap: 7px;
   color: #3d4566;
@@ -243,8 +243,8 @@ export default {
 }
 
 .equipment-management img {
-  width: 15px;
-  height: 13px;
+  width: 18px;
+  height: 15px;
 }
 
 .search-container {
@@ -290,8 +290,8 @@ export default {
   }
 
   .equipment-management {
-    width: 70px;
-    font-size: 9px;
+    width: 86px;
+    font-size: 12px;
   }
 }
 

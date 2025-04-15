@@ -543,6 +543,7 @@ export default {
 .menu-text {
   font-size: 14px;
   color: #606266;
+  font-weight: bold;
   text-align: right;
   width: 100%;
   padding-right: 8px;
