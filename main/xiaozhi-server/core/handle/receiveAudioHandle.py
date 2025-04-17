@@ -1,3 +1,4 @@
+import os
 from config.logger import setup_logging
 import time
 import asyncio
@@ -68,9 +69,9 @@ async def startToChat(conn, text):
     await send_stt_message(conn, text)
     if conn.use_function_call_mode:
         # 使用支持function calling的聊天方法
-        conn.executor.submit(conn.chat_with_function_calling, text)
+        conn.create_chat_with_function_calling_task(text)
     else:
-        conn.executor.submit(conn.chat, text)
+        conn.create_chat_task(text)
 
 
 async def no_voice_close_connect(conn):
@@ -112,7 +113,7 @@ async def check_bind_device(conn):
         # 播放提示音
         music_path = "config/assets/bind_code.wav"
         opus_packets, _ = conn.tts.audio_to_opus_data(music_path)
-        conn.audio_play_queue.put((opus_packets, text, 0))
+        await conn.audio_play_queue.put((opus_packets, text, 0))
 
         # 逐个播放数字
         for i in range(6):  # 确保只播放6位数字
@@ -120,7 +121,7 @@ async def check_bind_device(conn):
                 digit = conn.bind_code[i]
                 num_path = f"config/assets/bind_code/{digit}.wav"
                 num_packets, _ = conn.tts.audio_to_opus_data(num_path)
-                conn.audio_play_queue.put((num_packets, None, i + 1))
+                await conn.audio_play_queue.put((num_packets, None, i + 1))
             except Exception as e:
                 logger.bind(tag=TAG).error(f"播放数字音频失败: {e}")
                 continue
@@ -132,4 +133,4 @@ async def check_bind_device(conn):
         conn.llm_finish_task = True
         music_path = "config/assets/bind_not_found.wav"
         opus_packets, _ = conn.tts.audio_to_opus_data(music_path)
-        conn.audio_play_queue.put((opus_packets, text, 0))
+        await conn.audio_play_queue.put((opus_packets, text, 0))

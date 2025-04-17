@@ -97,7 +97,7 @@ async def process_intent_result(conn, intent_result, original_text):
             await send_stt_message(conn, original_text)
 
             # 使用executor执行函数调用和结果处理
-            def process_function_call():
+            async def process_function_call():
                 conn.dialogue.put(Message(role="user", content=original_text))
                 result = conn.func_handler.handle_llm_function_call(
                     conn, function_call_data
@@ -114,15 +114,12 @@ async def process_intent_result(conn, intent_result, original_text):
                             else 0
                         )
                         conn.recode_first_last_text(text, text_index)
-                        future = conn.executor.submit(
-                            conn.speak_and_play, text, text_index
-                        )
                         conn.llm_finish_task = True
-                        conn.tts_queue.put(future)
+                        await conn.tts_queue.put((text, text_index))
                         conn.dialogue.put(Message(role="assistant", content=text))
 
             # 将函数执行放在线程池中
-            conn.executor.submit(process_function_call)
+            await process_function_call()
             return True
         return False
     except json.JSONDecodeError as e:
