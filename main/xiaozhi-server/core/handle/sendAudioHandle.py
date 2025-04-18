@@ -31,7 +31,7 @@ async def sendAudioMessage(conn, audios, text, text_index=0):
 # 播放音频
 async def sendAudio(conn, audios):
     # 流控参数优化
-    frame_duration = 60  # 帧时长（毫秒），匹配 Opus 编码
+    frame_duration = conn.audio_params.get("frame_duration", 60)    # 帧时长（毫秒），匹配 Opus 编码
     start_time = time.perf_counter()
     play_position = 0
 

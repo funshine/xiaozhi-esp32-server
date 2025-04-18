@@ -14,8 +14,10 @@ class TTSProvider(TTSProviderBase):
             self.voice = config.get("private_voice")
         else:
             self.voice = config.get("voice")
-        self.response_format = config.get("response_format")
-        self.sample_rate = config.get("sample_rate")
+        self.response_format = config.get("response_format", "wav")
+        self.sample_rate = config.get("sample_rate", 16000)
+        if self.response_format == "opus":
+            self.sample_rate = 48000
         self.speed = float(config.get("speed", 1.0))
         self.gain = config.get("gain")
 
@@ -23,6 +25,7 @@ class TTSProvider(TTSProviderBase):
         self.api_url = f"https://{self.host}/v1/audio/speech"
 
     def generate_filename(self, extension=".wav"):
+        extension = "." + self.response_format
         return os.path.join(
             self.output_file,
             f"tts-{datetime.now().date()}@{uuid.uuid4().hex}{extension}",

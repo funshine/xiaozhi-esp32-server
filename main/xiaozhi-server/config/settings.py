@@ -25,7 +25,7 @@ def find_missing_keys(new_config, old_config, parent_key=""):
             continue
 
         # 递归检查嵌套字典
-        if isinstance(value, Mapping):
+        if isinstance(value, Mapping) and isinstance(old_config[key], Mapping):
             sub_missing = find_missing_keys(
                 value, old_config[key], parent_key=full_path
             )

@@ -60,6 +60,7 @@ class ConnectionHandler:
         self.session_id = None
         self.prompt = None
         self.welcome_msg = None
+        self.audio_params = None
 
         # 客户端状态相关
         self.client_abort = False
@@ -155,6 +156,8 @@ class ConnectionHandler:
             self.welcome_msg = self.config["xiaozhi"]
             self.welcome_msg["session_id"] = self.session_id
             # await self.websocket.send(json.dumps(self.welcome_msg))
+
+            self.audio_params = self.welcome_msg["audio_params"]
 
             # 异步初始化
             self.executor.submit(self._initialize_components)
