@@ -29,6 +29,7 @@ from core.auth import AuthMiddleware, AuthenticationError
 from core.mcp.manager import MCPManager
 from config.config_loader import get_private_config_from_api
 from config.manage_api_client import DeviceNotFoundException, DeviceBindException
+from core.utils.output_counter import add_device_output
 
 TAG = __name__
 
@@ -58,6 +59,7 @@ class ConnectionHandler:
         self.prompt = None
         self.welcome_msg = None
         self.audio_params = None
+        self.max_output_size = 0
 
         # 客户端状态相关
         self.client_abort = False
@@ -250,8 +252,8 @@ class ConnectionHandler:
             begin_time = time.time()
             private_config = get_private_config_from_api(
                 self.config,
-                self.headers.get("device-id", None),
-                self.headers.get("client-id", None),
+                self.headers.get("device-id"),
+                self.headers.get("client-id", self.headers.get("device-id")),
             )
             private_config["delete_audio"] = bool(self.config.get("delete_audio", True))
             self.logger.bind(tag=TAG).info(
@@ -324,7 +326,6 @@ class ConnectionHandler:
             self.config["selected_module"]["LLM"] = private_config["selected_module"][
                 "LLM"
             ]
-
         if private_config.get("Memory", None) is not None:
             init_memory = True
             self.config["Memory"] = private_config["Memory"]
@@ -342,6 +343,8 @@ class ConnectionHandler:
             self.config["selected_module"]["Prompt"] = private_config[
                 "selected_module"
             ]["Prompt"]
+        if private_config.get("device_max_output_size", None) is not None:
+            self.max_output_size = int(private_config["device_max_output_size"])
         try:
             modules = initialize_modules(
                 self.logger,
@@ -633,7 +636,7 @@ class ConnectionHandler:
                     )
             if not bHasError:
                 response_message.clear()
-                self.logger.bind(tag=TAG).info(
+                self.logger.bind(tag=TAG).debug(
                     f"function_name={function_name}, function_id={function_id}, function_arguments={function_arguments}"
                 )
                 function_call_data = {
@@ -867,6 +870,8 @@ class ConnectionHandler:
         self.logger.bind(tag=TAG).debug(f"TTS 文件生成完毕: {tts_file}")
         with self.tts_files_lock:
             self.tts_files[tts_file] = True
+        if self.max_output_size > 0:
+            add_device_output(self.headers.get("device-id"), len(text))
         return tts_file, text, text_index
 
     def clearSpeakStatus(self):
